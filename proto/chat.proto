@@ -1,0 +1,181 @@
+syntax = "proto3";
+
+package chat;
+
+option go_package = "github.com/AbhiramiRajeev/pulse-chat-platform/proto;chatpb";
+import "google/protobuf/timestamp.proto";
+
+service ChatService {
+
+  // ===========================
+  // Authentication
+  // ===========================
+
+  rpc Register(RegisterRequest) returns (RegisterResponse);
+  rpc Login(LoginRequest) returns (LoginResponse);
+  rpc RefreshToken(RefreshTokenRequest) returns (RefreshTokenResponse);
+
+  // ===========================
+  // Rooms
+  // ===========================
+
+  rpc CreateRoom(CreateRoomRequest) returns (CreateRoomResponse);
+  rpc ListRooms(ListRoomsRequest) returns (ListRoomsResponse);
+  rpc GetRoom(GetRoomRequest) returns (GetRoomResponse);
+  rpc JoinRoom(JoinRoomRequest) returns (JoinRoomResponse);
+  rpc LeaveRoom(LeaveRoomRequest) returns (LeaveRoomResponse);
+
+  // ===========================
+  // Messages
+  // ===========================
+
+  rpc SendMessage(SendMessageRequest) returns (SendMessageResponse);
+  rpc GetMessageHistory(GetMessageHistoryRequest) returns (GetMessageHistoryResponse);
+
+  // ===========================
+  // Presence
+  // ===========================
+
+  rpc Typing(TypingRequest) returns (TypingResponse);
+}
+
+//
+// ===========================
+// Authentication
+// ===========================
+//
+
+message RegisterRequest {
+  string username = 1;
+  string email = 2;
+  string password = 3;
+}
+
+message RegisterResponse {
+  User user = 1;
+}
+
+message LoginRequest {
+  string email = 1;
+  string password = 2;
+}
+
+message LoginResponse {
+  string access_token = 1;
+  string refresh_token = 2;
+  User user = 3;
+}
+
+message RefreshTokenRequest {
+  string refresh_token = 1;
+}
+
+message RefreshTokenResponse {
+  string access_token = 1;
+}
+
+//
+// ===========================
+// Rooms
+// ===========================
+//
+
+message CreateRoomRequest {
+  string name = 1;
+}
+
+message CreateRoomResponse {
+  Room room = 1;
+}
+
+message ListRoomsRequest {}
+
+message ListRoomsResponse {
+  repeated Room rooms = 1;
+}
+
+message GetRoomRequest {
+  string room_id = 1;
+}
+
+message GetRoomResponse {
+  Room room = 1;
+}
+
+message JoinRoomRequest {
+  string room_id = 1;
+}
+
+message JoinRoomResponse {}
+
+message LeaveRoomRequest {
+  string room_id = 1;
+}
+
+message LeaveRoomResponse {}
+
+//
+// ===========================
+// Messages
+// ===========================
+//
+
+message SendMessageRequest {
+  string room_id = 1;
+  string content = 2;
+}
+
+message SendMessageResponse {
+  Message message = 1;
+}
+
+message GetMessageHistoryRequest {
+  string room_id = 1;
+  int32 page = 2;
+  int32 page_size = 3;
+}
+
+message GetMessageHistoryResponse {
+  repeated Message messages = 1;
+}
+
+//
+// ===========================
+// Presence
+// ===========================
+//
+
+message TypingRequest {
+  string room_id = 1;
+  bool is_typing = 2;
+}
+
+message TypingResponse {}
+
+//
+// ===========================
+// Shared Models
+// ===========================
+//
+
+message User {
+  string id = 1;
+  string username = 2;
+  string email = 3;
+  google.protobuf.Timestamp created_at = 4;
+}
+
+message Room {
+  string id = 1;
+  string name = 2;
+  google.protobuf.Timestamp created_at = 3;
+}
+
+message Message {
+  string id = 1;
+  string room_id = 2;
+  string sender_id = 3;
+  string sender_name = 4;
+  string content = 5;
+  google.protobuf.Timestamp created_at = 6;
+}
