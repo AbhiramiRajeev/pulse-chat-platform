@@ -1,0 +1,43 @@
+syntax = "proto3";
+
+package message;
+
+option go_package = "github.com/AbhiramiRajeev/pulse-chat-platform/proto/messagepb;messagepb";
+
+service MessageService {
+  rpc CreateMessage(CreateMessageRequest) returns (CreateMessageResponse);
+  rpc GetMessages(GetMessagesRequest) returns (GetMessagesResponse);
+}
+
+message CreateMessageRequest {
+  string room_id = 1;
+  string user_id = 2;
+  string content = 3;
+  string client_message_id = 4;
+}
+
+message CreateMessageResponse {
+  string id = 1;
+  string room_id = 2;
+  string user_id = 3;
+  string content = 4;
+  string client_message_id = 5;
+  string created_at = 6;
+}
+
+message GetMessagesRequest {
+  string room_id = 1;
+}
+
+message Message {
+  string id = 1;
+  string room_id = 2;
+  string user_id = 3;
+  string content = 4;
+  string client_message_id = 5;
+  string created_at = 6;
+}
+
+message GetMessagesResponse {
+  repeated Message messages = 1;
+}

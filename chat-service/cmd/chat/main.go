@@ -15,6 +15,7 @@ import (
 	"github.com/AbhiramiRajeev/pulse-chat-platform/chat-service/internal/service"
 
 	authpb "github.com/AbhiramiRajeev/pulse-chat-platform/proto/authpb"
+	messagepb "github.com/AbhiramiRajeev/pulse-chat-platform/proto/messagepb"
 	roompb "github.com/AbhiramiRajeev/pulse-chat-platform/proto/roompb"
 
 	"google.golang.org/grpc"
@@ -47,6 +48,7 @@ func main() {
 	// Repositories
 	userRepo := repository.NewUserRepository(db)
 	roomRepo := repository.NewRoomRepository(db)
+	messageRepo := repository.NewMessageRepository(db)
 
 	// JWT
 	jwtManager := auth.NewJWTManager(
@@ -58,9 +60,15 @@ func main() {
 	authService := service.NewAuthService(userRepo, jwtManager)
 	roomService := service.NewRoomService(roomRepo)
 
+	messageService := service.NewMessageService(
+		messageRepo,
+		redisClient,
+	)
+
 	// Our gRPC server implementations
 	authGRPCServer := chatgrpc.NewAuthGRPCServer(authService)
 	roomGRPCServer := chatgrpc.NewRoomServer(roomService)
+	messageGRPCServer := chatgrpc.NewMessageGRPCServer(messageService)
 
 	// Create actual gRPC server
 	grpcServer := grpc.NewServer()
@@ -74,6 +82,11 @@ func main() {
 	roompb.RegisterRoomServiceServer(
 		grpcServer,
 		roomGRPCServer,
+	)
+
+	messagepb.RegisterMessageServiceServer(
+		grpcServer,
+		messageGRPCServer,
 	)
 
 	// Listen and serve

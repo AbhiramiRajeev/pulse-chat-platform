@@ -5,6 +5,7 @@ import (
 
 	"github.com/AbhiramiRajeev/pulse-chat-platform/api-gateway/internal/config"
 	authpb "github.com/AbhiramiRajeev/pulse-chat-platform/proto/authpb"
+	messagepb "github.com/AbhiramiRajeev/pulse-chat-platform/proto/messagepb"
 	roompb "github.com/AbhiramiRajeev/pulse-chat-platform/proto/roompb"
 
 	"google.golang.org/grpc"
@@ -12,8 +13,9 @@ import (
 )
 
 type Clients struct {
-	AuthClient authpb.AuthServiceClient
-	RoomClient roompb.RoomServiceClient
+	AuthClient    authpb.AuthServiceClient
+	RoomClient    roompb.RoomServiceClient
+	MessageClient messagepb.MessageServiceClient
 
 	conn *grpc.ClientConn
 }
@@ -29,11 +31,13 @@ func NewClients(cfg config.Config) (*Clients, error) {
 
 	authClient := authpb.NewAuthServiceClient(conn)
 	roomClient := roompb.NewRoomServiceClient(conn)
+	messageClient := messagepb.NewMessageServiceClient(conn)
 
 	return &Clients{
-		AuthClient: authClient,
-		RoomClient: roomClient,
-		conn:       conn,
+		AuthClient:    authClient,
+		RoomClient:    roomClient,
+		MessageClient: messageClient,
+		conn:          conn,
 	}, nil
 }
 
