@@ -13,7 +13,10 @@ import (
 	"github.com/AbhiramiRajeev/pulse-chat-platform/chat-service/internal/redis"
 	"github.com/AbhiramiRajeev/pulse-chat-platform/chat-service/internal/repository"
 	"github.com/AbhiramiRajeev/pulse-chat-platform/chat-service/internal/service"
+
 	authpb "github.com/AbhiramiRajeev/pulse-chat-platform/proto/authpb"
+	roompb "github.com/AbhiramiRajeev/pulse-chat-platform/proto/roompb"
+
 	"google.golang.org/grpc"
 )
 
@@ -43,7 +46,9 @@ func main() {
 
 	// Repositories
 	userRepo := repository.NewUserRepository(db)
+	roomRepo := repository.NewRoomRepository(db)
 
+	// JWT
 	jwtManager := auth.NewJWTManager(
 		cfg.JWTSecret,
 		cfg.JWTExpiry,
@@ -51,19 +56,27 @@ func main() {
 
 	// Services
 	authService := service.NewAuthService(userRepo, jwtManager)
+	roomService := service.NewRoomService(roomRepo)
 
+	// Our gRPC server implementations
 	authGRPCServer := chatgrpc.NewAuthGRPCServer(authService)
+	roomGRPCServer := chatgrpc.NewRoomServer(roomService)
 
-	//Create actual GRPC server
+	// Create actual gRPC server
 	grpcServer := grpc.NewServer()
 
-	//Register our implementation
+	// Register our implementations
 	authpb.RegisterAuthServiceServer(
 		grpcServer,
 		authGRPCServer,
 	)
 
-	//Listen and serve
+	roompb.RegisterRoomServiceServer(
+		grpcServer,
+		roomGRPCServer,
+	)
+
+	// Listen and serve
 	listener, err := net.Listen("tcp", ":50051")
 	if err != nil {
 		log.Fatalf("failed to listen: %v", err)
@@ -74,25 +87,4 @@ func main() {
 	if err := grpcServer.Serve(listener); err != nil {
 		log.Fatalf("failed to serve: %v", err)
 	}
-
-	// result, err := authService.Login(
-	// 	ctx,
-	// 	"abhirami@example.com",
-	// 	"password123",
-	// )
-
-	// if err != nil {
-	// 	log.Println("Login result:", err)
-	// 	return
-	// }
-
-	// fmt.Printf(
-	// 	"Login successful: ID=%s, Username=%s, Email=%s\n",
-	// 	result.User.ID,
-	// 	result.User.Username,
-	// 	result.User.Email,
-	// )
-
-	// fmt.Println("JWT Token:", result.Token)
-
 }

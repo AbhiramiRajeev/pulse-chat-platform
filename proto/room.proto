@@ -1,0 +1,37 @@
+syntax = "proto3";
+
+package room;
+
+option go_package = "github.com/AbhiramiRajeev/pulse-chat-platform/proto/roompb;roompb";
+
+service RoomService {
+  rpc CreateRoom(CreateRoomRequest) returns (CreateRoomResponse);
+  rpc GetRooms(GetRoomsRequest) returns (GetRoomsResponse);
+}
+
+message CreateRoomRequest {
+  string name = 1;
+  string user_id = 2;
+}
+
+message CreateRoomResponse {
+  string id = 1;
+  string name = 2;
+  string created_by = 3;
+  string created_at = 4;
+}
+
+message GetRoomsRequest {
+  string user_id = 1;
+}
+
+message Room {
+  string id = 1;
+  string name = 2;
+  string created_by = 3;
+  string created_at = 4;
+}
+
+message GetRoomsResponse {
+  repeated Room rooms = 1;
+}
