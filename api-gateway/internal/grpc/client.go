@@ -5,13 +5,17 @@ import (
 
 	"github.com/AbhiramiRajeev/pulse-chat-platform/api-gateway/internal/config"
 	authpb "github.com/AbhiramiRajeev/pulse-chat-platform/proto/authpb"
+	roompb "github.com/AbhiramiRajeev/pulse-chat-platform/proto/roompb"
+
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
 )
 
 type Clients struct {
 	AuthClient authpb.AuthServiceClient
-	conn       *grpc.ClientConn
+	RoomClient roompb.RoomServiceClient
+
+	conn *grpc.ClientConn
 }
 
 func NewClients(cfg config.Config) (*Clients, error) {
@@ -24,9 +28,11 @@ func NewClients(cfg config.Config) (*Clients, error) {
 	}
 
 	authClient := authpb.NewAuthServiceClient(conn)
+	roomClient := roompb.NewRoomServiceClient(conn)
 
 	return &Clients{
 		AuthClient: authClient,
+		RoomClient: roomClient,
 		conn:       conn,
 	}, nil
 }
