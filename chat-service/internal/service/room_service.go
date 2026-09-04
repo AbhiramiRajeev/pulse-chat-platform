@@ -13,6 +13,7 @@ import (
 )
 
 var ErrRoomNotFound = errors.New("room not found")
+var ErrInvalidRoomInput = errors.New("invalid room input")
 
 type RoomService struct {
 	roomRepo *repository.RoomRepository
@@ -64,4 +65,92 @@ func (s *RoomService) GetRoomsByUserID(
 	}
 
 	return rooms, nil
+}
+
+func (s *RoomService) IsUserInRoom(
+	ctx context.Context,
+	roomID string,
+	userID string,
+) (bool, error) {
+	if roomID == "" || userID == "" {
+		return false, ErrInvalidRoomInput
+	}
+
+	roomUUID, err := uuid.Parse(roomID)
+	if err != nil {
+		return false, ErrInvalidRoomInput
+	}
+
+	userUUID, err := uuid.Parse(userID)
+	if err != nil {
+		return false, ErrInvalidRoomInput
+	}
+
+	isMember, err := s.roomRepo.IsUserInRoom(
+		ctx,
+		roomUUID,
+		userUUID,
+	)
+	if err != nil {
+		return false, fmt.Errorf(
+			"check user in room: %w",
+			err,
+		)
+	}
+
+	return isMember, nil
+}
+
+func (s *RoomService) AddMember(
+	ctx context.Context,
+	roomID string,
+	userID string,
+	requestingUserID string,
+) error {
+	if roomID == "" || userID == "" || requestingUserID == "" {
+		return ErrInvalidRoomInput
+	}
+
+	roomUUID, err := uuid.Parse(roomID)
+	if err != nil {
+		return ErrInvalidRoomInput
+	}
+
+	userUUID, err := uuid.Parse(userID)
+	if err != nil {
+		return ErrInvalidRoomInput
+	}
+
+	requestingUUID, err := uuid.Parse(requestingUserID)
+	if err != nil {
+		return ErrInvalidRoomInput
+	}
+
+	err = s.roomRepo.AddMember(ctx, roomUUID, userUUID, requestingUUID)
+	if err != nil {
+		return fmt.Errorf("add member: %w", err)
+	}
+
+	return nil
+}
+
+func (s *RoomService) ListMembers(
+	ctx context.Context,
+	roomID string,
+) ([]repository.RoomMember, error) {
+	if roomID == "" {
+		return nil, ErrInvalidRoomInput
+	}
+
+	roomUUID, err := uuid.Parse(roomID)
+	if err != nil {
+		return nil, ErrInvalidRoomInput
+	}
+
+	members, err := s.roomRepo.ListMembers(ctx, roomUUID)
+	if err != nil {
+		return nil, fmt.Errorf("list members: %w", err)
+	}
+
+	return members, nil
 }
