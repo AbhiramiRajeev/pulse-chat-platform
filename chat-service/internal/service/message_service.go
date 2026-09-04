@@ -80,6 +80,11 @@ func (s *MessageService) CreateMessage(
 		clientMessageUUID,
 	)
 	if err != nil {
+		// Duplicate client_message_id: the message was already saved. Return it without
+		// re-publishing to Redis (the client is retrying an already-delivered message).
+		if errors.Is(err, repository.ErrDuplicateMessage) {
+			return message, nil
+		}
 		return nil, fmt.Errorf("create message: %w", err)
 	}
 
