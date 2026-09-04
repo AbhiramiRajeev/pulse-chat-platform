@@ -21,38 +21,21 @@ func handleGRPCError(w http.ResponseWriter, err error) {
 
 	switch grpcStatus.Code() {
 	case codes.InvalidArgument:
-		http.Error(
-			w,
-			grpcStatus.Message(),
-			http.StatusBadRequest,
-		)
+		http.Error(w, grpcStatus.Message(), http.StatusBadRequest)
 
 	case codes.AlreadyExists:
-		http.Error(
-			w,
-			grpcStatus.Message(),
-			http.StatusConflict,
-		)
+		http.Error(w, grpcStatus.Message(), http.StatusConflict)
 
 	case codes.Unauthenticated:
-		http.Error(
-			w,
-			grpcStatus.Message(),
-			http.StatusUnauthorized,
-		)
+		http.Error(w, grpcStatus.Message(), http.StatusUnauthorized)
+
+	case codes.PermissionDenied:
+		http.Error(w, grpcStatus.Message(), http.StatusForbidden)
 
 	case codes.NotFound:
-		http.Error(
-			w,
-			grpcStatus.Message(),
-			http.StatusNotFound,
-		)
+		http.Error(w, grpcStatus.Message(), http.StatusNotFound)
 
 	default:
-		http.Error(
-			w,
-			"internal server error",
-			http.StatusInternalServerError,
-		)
+		http.Error(w, "internal server error", http.StatusInternalServerError)
 	}
 }
