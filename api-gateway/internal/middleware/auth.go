@@ -78,3 +78,4 @@ func Auth(secret string) func(http.Handler) http.Handler {
 		})
 	}
 }
+
