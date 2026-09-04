@@ -7,6 +7,9 @@ option go_package = "github.com/AbhiramiRajeev/pulse-chat-platform/proto/roompb;
 service RoomService {
   rpc CreateRoom(CreateRoomRequest) returns (CreateRoomResponse);
   rpc GetRooms(GetRoomsRequest) returns (GetRoomsResponse);
+  rpc IsUserInRoom(IsUserInRoomRequest) returns (IsUserInRoomResponse);
+  rpc AddMember(AddMemberRequest) returns (AddMemberResponse);
+  rpc ListMembers(ListMembersRequest) returns (ListMembersResponse);
 }
 
 message CreateRoomRequest {
@@ -34,4 +37,39 @@ message Room {
 
 message GetRoomsResponse {
   repeated Room rooms = 1;
+}
+
+message IsUserInRoomRequest {
+  string room_id = 1;
+  string user_id = 2;
+}
+
+message IsUserInRoomResponse {
+  bool is_member = 1;
+}
+
+message AddMemberRequest {
+  string room_id = 1;
+  string user_id = 2;
+  string requesting_user_id = 3;
+}
+
+message AddMemberResponse {
+  bool success = 1;
+  string message = 2;
+}
+
+message RoomMember {
+  string user_id = 1;
+  string username = 2;
+  string email = 3;
+  string joined_at = 4;
+}
+
+message ListMembersRequest {
+  string room_id = 1;
+}
+
+message ListMembersResponse {
+  repeated RoomMember members = 1;
 }
