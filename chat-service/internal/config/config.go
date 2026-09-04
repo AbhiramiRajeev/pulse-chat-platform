@@ -33,7 +33,7 @@ func Load() Config {
 		GRPCPort: getEnv("GRPC_PORT", "50051"),
 
 		PostgresHost:     getEnv("POSTGRES_HOST", "localhost"),
-		PostgresPort:     getEnv("POSTGRES_PORT", "5433"),
+		PostgresPort:     getEnv("POSTGRES_PORT", "5432"),
 		PostgresUser:     getEnv("POSTGRES_USER", "postgres"),
 		PostgresPassword: getEnv("POSTGRES_PASSWORD", "postgres"),
 		PostgresDB:       getEnv("POSTGRES_DB", "pulse_chat"),
