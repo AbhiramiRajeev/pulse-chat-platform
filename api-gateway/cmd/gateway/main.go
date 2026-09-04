@@ -5,6 +5,10 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"os"
+	"os/signal"
+	"syscall"
+	"time"
 
 	"github.com/AbhiramiRajeev/pulse-chat-platform/api-gateway/internal/config"
 	gatewaygrpc "github.com/AbhiramiRajeev/pulse-chat-platform/api-gateway/internal/grpc"
@@ -54,7 +58,7 @@ func main() {
 
 	// Create WebSocket Hub and handler.
 	hub := chatws.NewHub()
-	wsHandler := chatws.NewHandler(hub)
+	wsHandler := chatws.NewHandler(clients, hub)
 
 	// Subscribe to Redis Pub/Sub for messages and broadcast them to WebSocket clients.
 	go gatewayredis.SubscribeToMessages(
@@ -80,13 +84,39 @@ func main() {
 	)
 
 	mux.Handle(
+		"POST /rooms/{roomID}/members",
+		authMiddleware(
+			middleware.RoomMembership(clients)(
+				http.HandlerFunc(roomHandler.AddMember),
+			),
+		),
+	)
+
+	mux.Handle(
+		"GET /rooms/{roomID}/members",
+		authMiddleware(
+			middleware.RoomMembership(clients)(
+				http.HandlerFunc(roomHandler.ListMembers),
+			),
+		),
+	)
+
+	mux.Handle(
 		"POST /rooms/{roomID}/messages",
-		authMiddleware(http.HandlerFunc(messageHandler.CreateMessage)),
+		authMiddleware(
+			middleware.RoomMembership(clients)(
+				http.HandlerFunc(messageHandler.CreateMessage),
+			),
+		),
 	)
 
 	mux.Handle(
 		"GET /rooms/{roomID}/messages",
-		authMiddleware(http.HandlerFunc(messageHandler.GetMessages)),
+		authMiddleware(
+			middleware.RoomMembership(clients)(
+				http.HandlerFunc(messageHandler.GetMessages),
+			),
+		),
 	)
 
 	// Public routes.
@@ -101,15 +131,47 @@ func main() {
 	)
 
 	// WebSocket route.
-	mux.HandleFunc(
+	mux.Handle(
 		"GET /ws/rooms/{roomID}",
-		wsHandler.Connect,
+		middleware.WebSocketAuth(cfg.JWTSecret)(
+			middleware.RoomMembership(clients)(
+				http.HandlerFunc(wsHandler.Connect),
+			),
+		),
 	)
+
+	// Create HTTP server
 	addr := ":" + cfg.HTTPPort
+	server := &http.Server{
+		Addr:    addr,
+		Handler: mux,
+	}
 
 	fmt.Println("Gateway listening on HTTP port:", cfg.HTTPPort)
 
-	if err := http.ListenAndServe(addr, mux); err != nil {
-		log.Fatalf("HTTP server failed: %v", err)
+	// Start server in a goroutine
+	go func() {
+		if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			log.Fatalf("HTTP server failed: %v", err)
+		}
+	}()
+
+	// Handle graceful shutdown
+	sigChan := make(chan os.Signal, 1)
+	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
+
+	// Wait for signal
+	sig := <-sigChan
+	log.Printf("Received signal: %v", sig)
+
+	// Graceful shutdown with timeout
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	log.Println("Shutting down HTTP server gracefully...")
+	if err := server.Shutdown(shutdownCtx); err != nil {
+		log.Printf("HTTP server shutdown error: %v", err)
 	}
+
+	log.Println("Gateway shutdown complete")
 }

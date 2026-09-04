@@ -5,6 +5,11 @@ import (
 	"fmt"
 	"log"
 	"net"
+	"os"
+	"os/signal"
+	"sync"
+	"syscall"
+	"time"
 
 	"github.com/AbhiramiRajeev/pulse-chat-platform/chat-service/internal/auth"
 	"github.com/AbhiramiRajeev/pulse-chat-platform/chat-service/internal/config"
@@ -89,7 +94,7 @@ func main() {
 		messageGRPCServer,
 	)
 
-	// Listen and serve
+	// Listen
 	listener, err := net.Listen("tcp", ":50051")
 	if err != nil {
 		log.Fatalf("failed to listen: %v", err)
@@ -97,7 +102,45 @@ func main() {
 
 	log.Println("Chat Service starting on gRPC port 50051")
 
-	if err := grpcServer.Serve(listener); err != nil {
-		log.Fatalf("failed to serve: %v", err)
+	// Start gRPC server in a goroutine
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		if err := grpcServer.Serve(listener); err != nil {
+			log.Printf("gRPC server error: %v", err)
+		}
+	}()
+
+	// Handle graceful shutdown
+	sigChan := make(chan os.Signal, 1)
+	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
+
+	// Wait for signal
+	sig := <-sigChan
+	log.Printf("Received signal: %v", sig)
+
+	// Graceful shutdown with timeout
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	log.Println("Shutting down gRPC server gracefully...")
+	grpcServer.GracefulStop()
+
+	// Wait for server goroutine to finish
+	done := make(chan struct{})
+	go func() {
+		wg.Wait()
+		close(done)
+	}()
+
+	select {
+	case <-done:
+		log.Println("gRPC server stopped")
+	case <-shutdownCtx.Done():
+		log.Println("Shutdown timeout exceeded, forcing stop")
+		grpcServer.Stop()
 	}
+
+	log.Println("Chat service shutdown complete")
 }
