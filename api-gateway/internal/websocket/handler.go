@@ -3,17 +3,20 @@ package websocket
 import (
 	"net/http"
 
+	gatewaygrpc "github.com/AbhiramiRajeev/pulse-chat-platform/api-gateway/internal/grpc"
 	"github.com/gorilla/websocket"
 )
 
 type Handler struct {
+	clients  *gatewaygrpc.Clients
 	hub      *Hub
 	upgrader websocket.Upgrader
 }
 
-func NewHandler(hub *Hub) *Handler {
+func NewHandler(clients *gatewaygrpc.Clients, hub *Hub) *Handler {
 	return &Handler{
-		hub: hub,
+		clients: clients,
+		hub:     hub,
 		upgrader: websocket.Upgrader{
 			CheckOrigin: func(r *http.Request) bool {
 				return true
@@ -22,13 +25,11 @@ func NewHandler(hub *Hub) *Handler {
 	}
 }
 
-
 func (h *Handler) Connect(
 	w http.ResponseWriter,
 	r *http.Request,
 ) {
 	roomID := r.PathValue("roomID")
-
 	if roomID == "" {
 		http.Error(
 			w,
@@ -38,29 +39,21 @@ func (h *Handler) Connect(
 		return
 	}
 
-	conn, err := h.upgrader.Upgrade(
-		w,
-		r,
-		nil,
-	)
+	ws, err := h.upgrader.Upgrade(w, r, nil)
 	if err != nil {
 		return
 	}
 
-	defer conn.Close()
+	// JoinRoom returns the wrapped conn (with its write mutex).
+	c := h.hub.JoinRoom(roomID, ws)
+	defer func() {
+		h.hub.LeaveRoom(roomID, c)
+		c.close()
+	}()
 
-	h.hub.JoinRoom(
-		roomID,
-		conn,
-	)
-
-	defer h.hub.LeaveRoom(
-		roomID,
-		conn,
-	)
-
+	// Read loop — keeps the connection alive and detects disconnects.
 	for {
-		_, _, err := conn.ReadMessage()
+		_, _, err := ws.ReadMessage()
 		if err != nil {
 			break
 		}

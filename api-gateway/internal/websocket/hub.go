@@ -6,22 +6,45 @@ import (
 	"github.com/gorilla/websocket"
 )
 
+// conn wraps a WebSocket connection with a write mutex.
+// Gorilla WebSocket allows only one concurrent writer per connection;
+// the mutex ensures that broadcasts from multiple goroutines are serialised.
+type conn struct {
+	ws  *websocket.Conn
+	mu  sync.Mutex
+}
+
+func (c *conn) writeMessage(messageType int, data []byte) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.ws.WriteMessage(messageType, data)
+}
+
+func (c *conn) close() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.ws.Close()
+}
+
 type Hub struct {
 	mu sync.RWMutex
 
-	rooms map[string]map[*websocket.Conn]bool
+	// rooms maps roomID → set of active connections.
+	rooms map[string]map[*conn]bool
 }
+
 /*
 	rooms
  │
  ├── "room-1"
  │      │
- │      ├── Connection A → true
- │      └── Connection B → true
+ │      ├── conn A → true
+ │      └── conn B → true
  │
  └── "room-2"
         │
-        └── Connection C → true
+        └── conn C → true
+
 The outer map is:
 
 Room ID → clients in that room
@@ -29,36 +52,28 @@ Room ID → clients in that room
 
 func NewHub() *Hub {
 	return &Hub{
-		rooms: make(map[string]map[*websocket.Conn]bool),
+		rooms: make(map[string]map[*conn]bool),
 	}
 }
 
-//JoinRoom adds this WebSocket connection to this room.
-// A connection represents an active user's connection (for example, their browser or device). We store the connection so we can later
-// send messages directly to it using conn.WriteMessage().
-// If the room does not exist in the Hub, we first create its
-// connections map, then add the connection to that room.
-func (h *Hub) JoinRoom(
-	roomID string,
-	conn *websocket.Conn,
-) {
+// JoinRoom adds a WebSocket connection to a room.
+// Returns the wrapped conn so the caller can use it to call LeaveRoom and close.
+func (h *Hub) JoinRoom(roomID string, ws *websocket.Conn) *conn {
+	c := &conn{ws: ws}
+
 	h.mu.Lock()
 	defer h.mu.Unlock()
 
 	if h.rooms[roomID] == nil {
-		h.rooms[roomID] = make(
-			map[*websocket.Conn]bool,
-		)
+		h.rooms[roomID] = make(map[*conn]bool)
 	}
 
-	h.rooms[roomID][conn] = true
+	h.rooms[roomID][c] = true
+	return c
 }
 
-
-func (h *Hub) LeaveRoom(
-	roomID string,
-	conn *websocket.Conn,
-) {
+// LeaveRoom removes a connection from a room and cleans up the room map if empty.
+func (h *Hub) LeaveRoom(roomID string, c *conn) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 
@@ -67,33 +82,53 @@ func (h *Hub) LeaveRoom(
 		return
 	}
 
-	delete(clients, conn)
+	delete(clients, c)
 
 	if len(clients) == 0 {
 		delete(h.rooms, roomID)
 	}
 }
 
-func (h *Hub) Broadcast(
-	roomID string,
-	message []byte,
-) {
+// Broadcast sends a message to all connections in a room.
+// Failed connections (dead/disconnected) are removed after the broadcast pass.
+func (h *Hub) Broadcast(roomID string, message []byte) {
 	h.mu.RLock()
-	defer h.mu.RUnlock()
 
 	clients, exists := h.rooms[roomID]
 	if !exists {
+		h.mu.RUnlock()
 		return
 	}
 
-	for conn := range clients {
-		err := conn.WriteMessage(
-			websocket.TextMessage,
-			message,
-		)
+	// Snapshot the current connection set so we don't hold the lock while writing.
+	conns := make([]*conn, 0, len(clients))
+	for c := range clients {
+		conns = append(conns, c)
+	}
 
-		if err != nil {
-			continue
+	h.mu.RUnlock()
+
+	// Write to each connection outside the hub lock.
+	// Each conn has its own write mutex, so concurrent Broadcast calls are safe.
+	var failedConns []*conn
+	for _, c := range conns {
+		if err := c.writeMessage(websocket.TextMessage, message); err != nil {
+			failedConns = append(failedConns, c)
 		}
+	}
+
+	// Remove failed connections under a write lock.
+	if len(failedConns) > 0 {
+		h.mu.Lock()
+		clients = h.rooms[roomID] // re-fetch; room may have been deleted
+		if clients != nil {
+			for _, c := range failedConns {
+				delete(clients, c)
+			}
+			if len(clients) == 0 {
+				delete(h.rooms, roomID)
+			}
+		}
+		h.mu.Unlock()
 	}
 }
