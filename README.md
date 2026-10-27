@@ -1,87 +1,57 @@
 # Pulse Chat Platform
 
-A real-time chat backend built with Go microservices. Features JWT authentication, room-based messaging, room membership management, and live message delivery via WebSockets and Redis Pub/Sub.
+A real-time chat backend in Go. You can register, log in, create rooms, add people to them and chat live over WebSockets.
 
----
+It's split into two services:
 
-## Architecture
+- **api-gateway** takes HTTP and WebSocket traffic, checks the JWT, and forwards requests to the chat service over gRPC.
+- **chat-service** has the business logic. Users, rooms and membership are in PostgreSQL, messages are in MongoDB, and every new message is published to Redis so the gateway can push it to connected clients.
 
 ```
 Client
-   │
-   │  HTTP / WebSocket
-   ▼
-API Gateway  (:8080)
-   │
-   │  gRPC (:50051)
-   ▼
-Chat Service
-   │
-   ├──► PostgreSQL  (users, rooms, membership)
-   ├──► MongoDB     (message documents)
-   │
-   └──► Redis Pub/Sub
-              │
-              ▼
-        API Gateway
-        Redis Subscriber
-              │
-              ▼
-         WebSocket Hub
-              │
-              ▼
-        Connected Clients
+  |  HTTP / WebSocket
+  v
+API Gateway (:8080)
+  |  gRPC (:50051)
+  v
+Chat Service ---> PostgreSQL  (users, rooms, members)
+  |          ---> MongoDB     (messages)
+  |
+  +--> Redis pub/sub --> Gateway subscriber --> WebSocket hub --> clients
 ```
 
-### Services
+Stack: Go 1.26, gRPC/protobuf, PostgreSQL (pgx), MongoDB (official driver), Redis, gorilla/websocket, golang-jwt, Docker Compose.
 
-| Service | Port | Role |
-|---|---|---|
-| `api-gateway` | 8080 (HTTP/WS) | Public-facing gateway; JWT auth, request routing |
-| `chat-service` | 50051 (gRPC) | Business logic, PostgreSQL/MongoDB persistence, Redis publishing |
-| PostgreSQL | 5432 (5433 on host) | Relational storage for users, rooms, and membership |
-| MongoDB | 27017 | Message documents and database-enforced send idempotency |
-| Redis | 6379 | Pub/Sub for real-time message fanout |
+## What it does
 
----
+- Register and log in (JWT)
+- Create rooms and list the ones you're in
+- Room creator can add members
+- Send messages and fetch room history, members only
+- Live delivery over WebSockets
+- Safe retries when sending a message (see `client_message_id` below)
+- Graceful shutdown on both services
 
-## Technologies
+## Running with Docker
 
-- **Go 1.26** — both services
-- **gRPC / Protocol Buffers** — inter-service communication
-- **PostgreSQL 16** — relational storage (pgx driver)
-- **MongoDB 7** — message document storage (official Go driver)
-- **Redis 7** — Pub/Sub for real-time delivery
-- **WebSockets** — Gorilla WebSocket
-- **JWT** — `golang-jwt/jwt/v5` for authentication
-- **Docker / Docker Compose** — container orchestration
+```bash
+cp .env.example .env
+docker compose -f deployments/docker-compose.yaml up --build
+```
 
----
+This starts Postgres, MongoDB, Redis and both services. The gateway is on `localhost:8080`. Postgres is mapped to `5433` on the host so it doesn't clash with a local Postgres on 5432. If any port clashes on your machine, change the matching `*_HOST_PORT` value in `.env`.
 
-## Features
+Stop it with:
 
-- User registration and login
-- JWT authentication (HTTP `Authorization: Bearer` header)
-- Create and list chat rooms
-- Room membership management (creator can add members)
-- Room membership enforcement on all protected routes
-- Send and retrieve messages
-- Real-time message delivery via WebSockets (Redis Pub/Sub fanout)
-- Message idempotency via `client_message_id` (duplicate-safe retries)
-- Graceful shutdown for both services
+```bash
+docker compose -f deployments/docker-compose.yaml down
+```
 
----
+## Running without Docker
 
-## Running Locally (without Docker)
+You need Go 1.26+, PostgreSQL, MongoDB and Redis running locally.
 
-### Prerequisites
-
-- Go 1.26+
-- PostgreSQL 16 running on `localhost:5432` (or `5433`)
-- MongoDB 7 running on `localhost:27017`
-- Redis running on `localhost:6379`
-
-### 1 — Apply database migrations
+Apply the SQL migrations first:
 
 ```bash
 psql -U postgres -d pulse_chat -f migrations/001_initial_schema.sql
@@ -89,174 +59,90 @@ psql -U postgres -d pulse_chat -f migrations/002_create_rooms.sql
 psql -U postgres -d pulse_chat -f migrations/003_create_room_members.sql
 ```
 
-The chat service creates MongoDB's `messages` collection and required indexes
-at startup. Migration `004_create_messages.sql` remains a numbered no-op for
-compatibility with the original PostgreSQL migration sequence.
+There's no step for messages. They live in MongoDB now, and the chat service creates the collection indexes when it starts. `004_create_messages.sql` is just an empty file so the numbering doesn't change.
 
-### 2 — Start the Chat Service
+Then start the chat service:
 
 ```bash
 export JWT_SECRET=my-secret-key
 export POSTGRES_HOST=localhost
-export POSTGRES_PORT=5432   # or 5433 if you used the Docker-mapped port
+export POSTGRES_PORT=5432
 export POSTGRES_USER=postgres
 export POSTGRES_PASSWORD=postgres
 export POSTGRES_DB=pulse_chat
 export REDIS_HOST=localhost
-export REDIS_PORT=6379
 export MONGO_URI=mongodb://localhost:27017
 export MONGO_DATABASE=pulse_chat
 
 go run ./chat-service/cmd/chat
 ```
 
-### 3 — Start the API Gateway
+And the gateway in another terminal:
 
 ```bash
 export JWT_SECRET=my-secret-key
 export CHAT_SERVICE_ADDR=localhost:50051
 export REDIS_HOST=localhost
-export REDIS_PORT=6379
-export HTTP_PORT=8080
 
 go run ./api-gateway/cmd/gateway
 ```
 
----
+## Environment variables
 
-## Running with Docker Compose
+Gateway:
 
-```bash
-# Copy and optionally edit environment variables
-cp .env.example .env
-
-# Build and start all services
-docker compose -f deployments/docker-compose.yaml up --build
-
-# Stop
-docker compose -f deployments/docker-compose.yaml down
-```
-
-This starts PostgreSQL, MongoDB, Redis, Chat Service, and API Gateway with correct inter-container networking. PostgreSQL's schema is applied automatically on the first run; the chat service creates MongoDB indexes before accepting gRPC traffic.
-
-If a default host port is already occupied, override it when starting Compose,
-for example `POSTGRES_HOST_PORT=55433 docker compose -f deployments/docker-compose.yaml up --build`.
-
----
-
-## Environment Variables
-
-### API Gateway
-
-| Variable | Default | Description |
+| Variable | Default | |
 |---|---|---|
-| `HTTP_PORT` | `8080` | HTTP server port |
-| `CHAT_SERVICE_ADDR` | `localhost:50051` | gRPC address of chat-service |
-| `JWT_SECRET` | *(required)* | JWT signing secret |
-| `REDIS_HOST` | `localhost` | Redis hostname |
-| `REDIS_PORT` | `6379` | Redis port |
+| `HTTP_PORT` | `8080` | |
+| `CHAT_SERVICE_ADDR` | `localhost:50051` | gRPC address of the chat service |
+| `JWT_SECRET` | none | required |
+| `REDIS_HOST` / `REDIS_PORT` | `localhost` / `6379` | |
 
-### Chat Service
+Chat service:
 
-| Variable | Default | Description |
+| Variable | Default | |
 |---|---|---|
-| `GRPC_PORT` | `50051` | gRPC server port |
-| `POSTGRES_HOST` | `localhost` | PostgreSQL hostname |
-| `POSTGRES_PORT` | `5432` | PostgreSQL port |
-| `POSTGRES_USER` | `postgres` | PostgreSQL user |
-| `POSTGRES_PASSWORD` | `postgres` | PostgreSQL password |
-| `POSTGRES_DB` | `pulse_chat` | PostgreSQL database name |
-| `REDIS_HOST` | `localhost` | Redis hostname |
-| `REDIS_PORT` | `6379` | Redis port |
-| `MONGO_URI` | `mongodb://localhost:27017` | MongoDB connection string |
-| `MONGO_DATABASE` | `pulse_chat` | MongoDB database containing message documents |
-| `JWT_SECRET` | *(required)* | JWT signing secret (must match gateway) |
-| `JWT_EXPIRY` | `24h` | JWT token expiry duration |
+| `GRPC_PORT` | `50051` | |
+| `POSTGRES_HOST` / `POSTGRES_PORT` | `localhost` / `5432` | |
+| `POSTGRES_USER` / `POSTGRES_PASSWORD` | `postgres` / `postgres` | |
+| `POSTGRES_DB` | `pulse_chat` | |
+| `MONGO_URI` | `mongodb://localhost:27017` | |
+| `MONGO_DATABASE` | `pulse_chat` | |
+| `REDIS_HOST` / `REDIS_PORT` | `localhost` / `6379` | |
+| `JWT_SECRET` | none | required, must match the gateway |
+| `JWT_EXPIRY` | `24h` | |
 
----
+## API
 
-## API Endpoints
+Everything except `/register` and `/login` needs an `Authorization: Bearer <token>` header.
 
-### Auth
+| Method | Path | Notes |
+|---|---|---|
+| POST | `/register` | `{"username", "email", "password"}` |
+| POST | `/login` | `{"email", "password"}`, returns a token |
+| POST | `/rooms` | `{"name"}`, creator is added automatically |
+| GET | `/rooms` | rooms you belong to |
+| POST | `/rooms/{roomID}/members` | `{"user_id"}`, creator only |
+| GET | `/rooms/{roomID}/members` | members only |
+| POST | `/rooms/{roomID}/messages` | `{"content", "client_message_id"}`, members only |
+| GET | `/rooms/{roomID}/messages` | room history, members only |
 
-| Method | Path | Auth | Description |
-|---|---|---|---|
-| `POST` | `/register` | None | Register a new user |
-| `POST` | `/login` | None | Login and receive JWT |
-
-**Register:**
-```json
-POST /register
-{ "username": "alice", "email": "alice@example.com", "password": "secret" }
-```
-
-**Login:**
-```json
-POST /login
-{ "email": "alice@example.com", "password": "secret" }
-// Response includes "token"
-```
-
-### Rooms
-
-| Method | Path | Auth | Description |
-|---|---|---|---|
-| `POST` | `/rooms` | Bearer JWT | Create a room (creator auto-joined) |
-| `GET` | `/rooms` | Bearer JWT | List rooms the user belongs to |
-| `POST` | `/rooms/{roomID}/members` | Bearer JWT + member | Add a user to a room (creator only) |
-| `GET` | `/rooms/{roomID}/members` | Bearer JWT + member | List room members |
-
-**Create room:**
-```json
-POST /rooms
-Authorization: Bearer <token>
-{ "name": "general" }
-```
-
-**Add member:**
-```json
-POST /rooms/{roomID}/members
-Authorization: Bearer <token>
-{ "user_id": "<uuid>" }
-```
-
-### Messages
-
-| Method | Path | Auth | Description |
-|---|---|---|---|
-| `POST` | `/rooms/{roomID}/messages` | Bearer JWT + member | Send a message |
-| `GET` | `/rooms/{roomID}/messages` | Bearer JWT + member | Get room message history |
-
-**Send message:**
-```json
-POST /rooms/{roomID}/messages
-Authorization: Bearer <token>
-{ "content": "Hello!", "client_message_id": "<uuid>" }
-```
-
-`client_message_id` is a UUID you generate client-side. Retrying with the same `client_message_id` returns the existing message — no duplicates are created.
+`client_message_id` is a UUID the client generates. If the same one is sent again (a retry after a timeout, for example) you get the original message back. No duplicate is created and nothing is broadcast a second time.
 
 ### WebSocket
 
 ```
-GET /ws/rooms/{roomID}?token=<JWT>
+ws://localhost:8080/ws/rooms/{roomID}?token=<JWT>
 ```
 
-Authentication uses the query parameter `token` (JWT). Room membership is verified **before** the HTTP connection is upgraded to WebSocket. Non-members receive `403 Forbidden` at the HTTP level.
-
----
-
-## WebSocket Usage
+The token goes in the query string because browsers can't set headers on a WebSocket. Membership is checked before the upgrade, so a non-member gets a normal 403. Try it with wscat:
 
 ```bash
-# Install wscat
 npm install -g wscat
-
-# Connect (replace values)
 wscat -c "ws://localhost:8080/ws/rooms/<ROOM_ID>?token=<JWT>"
 ```
 
-Once connected, incoming messages are pushed as JSON:
+Messages arrive as JSON:
 
 ```json
 {
@@ -269,177 +155,70 @@ Once connected, incoming messages are pushed as JSON:
 }
 ```
 
----
+## How a message gets delivered
 
-## Real-Time Message Flow
+1. Client A sends `POST /rooms/{roomID}/messages` to the gateway.
+2. The gateway checks the JWT and room membership, then calls `CreateMessage` on the chat service over gRPC.
+3. The chat service checks membership again, saves the message in MongoDB, and publishes it to the Redis channel `room:<roomID>`.
+4. The gateway has a goroutine subscribed to `room:*`. When something arrives it hands it to the WebSocket hub.
+5. The hub writes it to every connection in that room, so Client B gets it.
 
-```
-Client A: POST /rooms/{roomID}/messages
-    │
-    ▼
-API Gateway
-    │  validates JWT + room membership
-    │
-    │  gRPC CreateMessage
-    ▼
-Chat Service
-    │  saves message document to MongoDB
-    │
-    │  PUBLISH room:<roomID>  →  Redis
-    ▼
-Redis Pub/Sub
-    │
-    │  PSubscribe("room:*")
-    ▼
-API Gateway — Redis Subscriber goroutine
-    │
-    │  hub.Broadcast(roomID, payload)
-    ▼
-WebSocket Hub
-    │  writes to all connections in that room
-    ▼
-Client B (WebSocket) receives the JSON event
-```
-
----
-
-## Project Structure
+## Project structure
 
 ```
-pulse-chat-platform/
-├── api-gateway/
-│   ├── cmd/gateway/main.go          # Entry point + graceful shutdown
-│   └── internal/
-│       ├── config/                  # Config from environment variables
-│       ├── grpc/                    # gRPC client (connects to chat-service)
-│       ├── handler/                 # HTTP handlers (auth, rooms, messages)
-│       ├── middleware/              # Auth, WebSocketAuth, RoomMembership
-│       ├── redis/                   # Redis client + Pub/Sub subscriber
-│       └── websocket/               # Hub (room connections) + WS handler
-├── chat-service/
-│   ├── cmd/chat/main.go             # Entry point + graceful shutdown
-│   └── internal/
-│       ├── auth/                    # JWT manager
-│       ├── config/                  # Config from environment variables
-│       ├── grpc/                    # gRPC servers (auth, room, message)
-│       ├── models/                  # Domain models (User, Room, Message)
-│       ├── mongodb/                 # MongoDB client lifecycle
-│       ├── postgres/                # PostgreSQL connection pool
-│       ├── redis/                   # Redis client
-│       ├── repository/              # PostgreSQL and MongoDB data access
-│       └── service/                 # Business logic
-├── proto/
-│   ├── auth.proto                   # AuthService RPC definitions
-│   ├── room.proto                   # RoomService RPC definitions
-│   ├── message.proto                # MessageService RPC definitions
-│   ├── authpb/                      # Generated Go code
-│   ├── roompb/
-│   └── messagepb/
-├── migrations/
-│   ├── 001_initial_schema.sql       # users table
-│   ├── 002_create_rooms.sql         # rooms table
-│   ├── 003_create_room_members.sql  # room_members table
-│   ├── 004_create_messages.sql      # compatibility no-op (messages use MongoDB)
-│   └── init.sql                     # Combined init script (used by Docker)
-├── deployments/
-│   └── docker-compose.yaml
-├── .env.example
-├── go.mod
-└── README.md
+api-gateway/
+  cmd/gateway/        entry point
+  internal/
+    config/ grpc/ handler/ middleware/ redis/ websocket/
+chat-service/
+  cmd/chat/           entry point
+  internal/
+    auth/ config/ grpc/ models/ mongodb/ postgres/ redis/ repository/ service/
+proto/                .proto files and generated Go code
+migrations/           SQL files, init.sql is the combined one Docker uses
+deployments/          docker-compose.yaml
+docs/architecture.md
 ```
 
----
+## Notes
 
-## Design Decisions
+- Redis pub/sub doesn't keep anything. If the gateway isn't subscribed at the moment a message is published, that live delivery is lost. The message is still saved and shows up in the history endpoint. Redis Streams or Kafka would fix this if guaranteed delivery is ever needed.
+- Postgres and MongoDB split: Postgres holds users, rooms and membership, since those are relational and drive permissions. MongoDB holds messages. On startup the chat service creates a unique index on `(user_id, client_message_id)`, which is what stops duplicates, and an index on `(room_id, created_at, _id)` for reading history in order.
+- More on the request flow is in [`docs/architecture.md`](docs/architecture.md).
 
-### Why API Gateway?
-Clients interact with a single HTTP/WebSocket endpoint. The gateway handles authentication, routing, and protocol translation (HTTP → gRPC). Chat Service is never exposed directly.
-
-### Why gRPC?
-Strongly-typed contracts between services. Protocol Buffers are more efficient than JSON for inter-service communication. Service definitions double as documentation.
-
-### Why Redis Pub/Sub?
-When a message is saved, Chat Service publishes it to `room:<roomID>`. API Gateway subscribes with `PSubscribe("room:*")` and fans out to all WebSocket connections. This decouples message storage from delivery and allows horizontal scaling of the gateway (each instance subscribes to all channels).
-
-**Important limitation:** Redis Pub/Sub is ephemeral. Messages published while no subscriber is connected are lost. For guaranteed delivery, Redis Streams or Kafka would be appropriate.
-
-### Why WebSockets?
-Full-duplex TCP connection ideal for real-time push. Membership is verified before the HTTP upgrade — rejections happen at the HTTP level with proper status codes.
-
-### Why PostgreSQL and MongoDB?
-PostgreSQL remains the source of truth for relational identity and authorization data: users, rooms, creators, and room membership. The gateway enforces membership on every room-scoped route, and Chat Service checks membership again before persisting a message. MongoDB owns chat message documents and room-history reads. On startup, Chat Service creates a unique compound index on `(user_id, client_message_id)` for duplicate-safe retries and a `(room_id, created_at, _id)` index for deterministic room-history scans. A duplicate retry returns the existing document and is not published to Redis a second time.
-
----
-
-## Complete Test Walkthrough
-
-See [`docs/architecture.md`](docs/architecture.md) for full request flow documentation.
+## Quick test with curl
 
 ```bash
 BASE=http://localhost:8080
 
-# 1. Register user Alice
-curl -s -X POST $BASE/register \
-  -H "Content-Type: application/json" \
+# register two users
+curl -s -X POST $BASE/register -H "Content-Type: application/json" \
   -d '{"username":"alice","email":"alice@example.com","password":"secret123"}'
-
-# 2. Register user Bob
-curl -s -X POST $BASE/register \
-  -H "Content-Type: application/json" \
+curl -s -X POST $BASE/register -H "Content-Type: application/json" \
   -d '{"username":"bob","email":"bob@example.com","password":"secret123"}'
 
-# 3. Login as Alice (save the token)
-TOKEN=$(curl -s -X POST $BASE/login \
-  -H "Content-Type: application/json" \
-  -d '{"email":"alice@example.com","password":"secret123"}' \
-  | jq -r '.token')
+# log in as alice
+TOKEN=$(curl -s -X POST $BASE/login -H "Content-Type: application/json" \
+  -d '{"email":"alice@example.com","password":"secret123"}' | jq -r '.token')
 
-BOB_ID=$(curl -s -X POST $BASE/login \
-  -H "Content-Type: application/json" \
-  -d '{"email":"bob@example.com","password":"secret123"}' \
-  | jq -r '.id')
+# need bob's id to add him to a room
+BOB_ID=$(curl -s -X POST $BASE/login -H "Content-Type: application/json" \
+  -d '{"email":"bob@example.com","password":"secret123"}' | jq -r '.id')
 
-# 4. Create a room
-ROOM_ID=$(curl -s -X POST $BASE/rooms \
-  -H "Authorization: Bearer $TOKEN" \
-  -H "Content-Type: application/json" \
-  -d '{"name":"general"}' \
-  | jq -r '.id')
+# create a room and add bob
+ROOM_ID=$(curl -s -X POST $BASE/rooms -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" -d '{"name":"general"}' | jq -r '.id')
 
-# 5. Add Bob to the room
-curl -s -X POST $BASE/rooms/$ROOM_ID/members \
-  -H "Authorization: Bearer $TOKEN" \
-  -H "Content-Type: application/json" \
-  -d "{\"user_id\":\"$BOB_ID\"}"
+curl -s -X POST $BASE/rooms/$ROOM_ID/members -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" -d "{\"user_id\":\"$BOB_ID\"}"
 
-# 6. List members
-curl -s $BASE/rooms/$ROOM_ID/members \
-  -H "Authorization: Bearer $TOKEN"
-
-# 7. Send a message
-curl -s -X POST $BASE/rooms/$ROOM_ID/messages \
-  -H "Authorization: Bearer $TOKEN" \
+# send a message
+curl -s -X POST $BASE/rooms/$ROOM_ID/messages -H "Authorization: Bearer $TOKEN" \
   -H "Content-Type: application/json" \
   -d '{"content":"Hello room!","client_message_id":"11111111-1111-1111-1111-111111111111"}'
 
-# 8. Try as non-member (should 403)
-BOB_TOKEN=$(curl -s -X POST $BASE/login \
-  -H "Content-Type: application/json" \
-  -d '{"email":"bob@example.com","password":"secret123"}' \
-  | jq -r '.token')
-# Create another room that Bob doesn't belong to
-OTHER_ROOM=$(curl -s -X POST $BASE/rooms \
-  -H "Authorization: Bearer $BOB_TOKEN" \
-  -H "Content-Type: application/json" \
-  -d '{"name":"bobs-room"}' | jq -r '.id')
-# Alice tries to post to Bob's room (403)
-curl -s -o /dev/null -w "%{http_code}" \
-  -X POST $BASE/rooms/$OTHER_ROOM/messages \
-  -H "Authorization: Bearer $TOKEN" \
-  -H "Content-Type: application/json" \
-  -d '{"content":"sneaky","client_message_id":"22222222-2222-2222-2222-222222222222"}'
-
-# 9. WebSocket — connect as Alice
-wscat -c "ws://localhost:8080/ws/rooms/$ROOM_ID?token=$TOKEN"
-# In another terminal, send a message — it should appear in wscat output.
+# read it back
+curl -s $BASE/rooms/$ROOM_ID/messages -H "Authorization: Bearer $TOKEN"
 ```
+
+To see live delivery, open a wscat connection to the room in another terminal before sending the message.
