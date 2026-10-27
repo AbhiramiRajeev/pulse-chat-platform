@@ -2,10 +2,14 @@ package grpc
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"time"
 
 	"github.com/AbhiramiRajeev/pulse-chat-platform/chat-service/internal/service"
 	messagepb "github.com/AbhiramiRajeev/pulse-chat-platform/proto/messagepb"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 )
 
 type MessageGRPCServer struct {
@@ -34,6 +38,12 @@ func (s *MessageGRPCServer) CreateMessage(
 		req.GetClientMessageId(),
 	)
 	if err != nil {
+		switch {
+		case errors.Is(err, service.ErrInvalidMessageInput):
+			return nil, status.Error(codes.InvalidArgument, err.Error())
+		case errors.Is(err, service.ErrNotRoomMember):
+			return nil, status.Error(codes.PermissionDenied, err.Error())
+		}
 		return nil, fmt.Errorf("create message: %w", err)
 	}
 
@@ -43,7 +53,7 @@ func (s *MessageGRPCServer) CreateMessage(
 		UserId:          message.UserID.String(),
 		Content:         message.Content,
 		ClientMessageId: message.ClientMessageID.String(),
-		CreatedAt:       message.CreatedAt.String(),
+		CreatedAt:       message.CreatedAt.Format(time.RFC3339Nano),
 	}, nil
 }
 
@@ -71,7 +81,7 @@ func (s *MessageGRPCServer) GetMessages(
 				UserId:          message.UserID.String(),
 				Content:         message.Content,
 				ClientMessageId: message.ClientMessageID.String(),
-				CreatedAt:       message.CreatedAt.String(),
+				CreatedAt:       message.CreatedAt.Format(time.RFC3339Nano),
 			},
 		)
 	}
