@@ -18,7 +18,9 @@ type Config struct {
 	RedisHost string
 	RedisPort string
 
-	//JWTManager expects:expiry time.Duration
+	MongoURI      string
+	MongoDatabase string
+
 	JWTSecret string
 	JWTExpiry time.Duration
 }
@@ -40,6 +42,9 @@ func Load() Config {
 
 		RedisHost: getEnv("REDIS_HOST", "localhost"),
 		RedisPort: getEnv("REDIS_PORT", "6379"),
+
+		MongoURI:      getEnv("MONGO_URI", "mongodb://localhost:27017"),
+		MongoDatabase: getEnv("MONGO_DATABASE", "pulse_chat"),
 
 		JWTSecret: getEnv("JWT_SECRET", ""),
 		JWTExpiry: jwtExpiry,
