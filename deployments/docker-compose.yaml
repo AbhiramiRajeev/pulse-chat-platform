@@ -7,7 +7,7 @@ services:
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
       POSTGRES_DB: ${POSTGRES_DB:-pulse_chat}
     ports:
-      - "5433:5432"
+      - "${POSTGRES_HOST_PORT:-5433}:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
       - ./migrations/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
@@ -21,9 +21,22 @@ services:
     image: redis:7-alpine
     container_name: pulse-redis
     ports:
-      - "6379:6379"
+      - "${REDIS_HOST_PORT:-6379}:6379"
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  mongodb:
+    image: mongo:7
+    container_name: pulse-mongodb
+    ports:
+      - "${MONGO_HOST_PORT:-27017}:27017"
+    volumes:
+      - mongodb_data:/data/db
+    healthcheck:
+      test: ["CMD", "mongosh", "--quiet", "--eval", "db.adminCommand('ping').ok"]
       interval: 5s
       timeout: 5s
       retries: 10
@@ -42,6 +55,8 @@ services:
       POSTGRES_DB: ${POSTGRES_DB:-pulse_chat}
       REDIS_HOST: redis
       REDIS_PORT: "6379"
+      MONGO_URI: mongodb://mongodb:27017
+      MONGO_DATABASE: ${MONGO_DATABASE:-pulse_chat}
       JWT_SECRET: ${JWT_SECRET:-changeme-secret-key}
       JWT_EXPIRY: ${JWT_EXPIRY:-24h}
     depends_on:
@@ -49,8 +64,10 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
+      mongodb:
+        condition: service_healthy
     ports:
-      - "50051:50051"
+      - "${GRPC_HOST_PORT:-50051}:50051"
 
   api-gateway:
     build:
@@ -69,7 +86,8 @@ services:
       redis:
         condition: service_healthy
     ports:
-      - "8080:8080"
+      - "${HTTP_HOST_PORT:-8080}:8080"
 
 volumes:
   postgres_data:
+  mongodb_data:
