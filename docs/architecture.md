@@ -5,11 +5,12 @@
 Pulse Chat Platform is a Go microservices application with two services:
 
 - **api-gateway** — public HTTP/WebSocket edge service
-- **chat-service** — internal gRPC service owning all business logic and data
+- **chat-service** — internal gRPC service owning all business logic and persistence
 
 Infrastructure:
 
-- **PostgreSQL** — persistent relational storage
+- **PostgreSQL** — users, rooms, and room membership
+- **MongoDB** — message documents and idempotency index
 - **Redis** — Pub/Sub for real-time message fanout
 
 ---
@@ -27,8 +28,9 @@ Infrastructure:
 ### Chat Service
 
 - Implements gRPC servers: `AuthService`, `RoomService`, `MessageService`
-- Owns all database operations (via pgx connection pool)
-- Publishes new messages to Redis after writing to PostgreSQL
+- Owns PostgreSQL and MongoDB operations
+- Creates required MongoDB indexes before serving gRPC
+- Publishes new messages to Redis after writing to MongoDB
 - Generates and validates JWTs
 
 ---
@@ -165,16 +167,17 @@ Chat Service (MessageGRPCServer)
   │
   ▼
 MessageService.CreateMessage
+  │  checks PostgreSQL room_members (defense in depth)
   │
   ▼
 MessageRepository.CreateMessage
-  │  INSERT INTO messages (room_id, user_id, content, client_message_id)
+  │  INSERT message document into MongoDB
   │
-  │  On UNIQUE(user_id, client_message_id) violation:
+  │  On unique (user_id, client_message_id) violation:
   │    → fetch existing message (idempotent retry)
   │    → return it without re-publishing
   ▼
-PostgreSQL
+MongoDB
   │
   ▼
 (if new message) Redis PUBLISH room:<roomID> { id, room_id, user_id, content, ... }
@@ -259,13 +262,23 @@ rooms (id UUID PK, name TEXT, created_by UUID FK→users, created_at)
 room_members (user_id UUID FK→users, room_id UUID FK→rooms,
               joined_at, PRIMARY KEY(user_id, room_id))
 
--- Messages
-messages (id UUID PK, room_id UUID FK→rooms, user_id UUID FK→users,
-          content TEXT, client_message_id UUID,
-          created_at, UNIQUE(user_id, client_message_id))
+// MongoDB messages collection
+{
+  _id: UUID string,
+  room_id: UUID string,
+  user_id: UUID string,
+  content: string,
+  client_message_id: UUID string,
+  created_at: BSON datetime
+}
 ```
 
-The `UNIQUE(user_id, client_message_id)` constraint is the database-level guarantee for message idempotency. If a client retries a message send, the repository detects the `23505` unique violation, fetches the existing message, and returns it — no duplicate is stored, no second Redis publish occurs.
+MongoDB indexes:
+
+- Unique `{ user_id: 1, client_message_id: 1 }` guarantees duplicate-safe retries.
+- `{ room_id: 1, created_at: 1, _id: 1 }` supports deterministic room-history reads.
+
+If a client retries a message send, the repository detects MongoDB's duplicate-key error, fetches the existing document, and returns it. No duplicate is stored and no second Redis publish occurs.
 
 ---
 
@@ -293,12 +306,14 @@ For `AddMember`, the repository additionally checks that the requesting user is 
 
 1. **Redis Pub/Sub is ephemeral.** If the API Gateway restarts while Chat Service publishes messages, those messages are lost. For stronger delivery guarantees, consider Redis Streams or Kafka.
 
-2. **No message pagination.** `GET /rooms/{roomID}/messages` returns all messages for the room. For large rooms, add `LIMIT/OFFSET` or cursor-based pagination.
+2. **Persistence and publication are not atomic.** A message can be stored in MongoDB while Redis publication fails. The API request reports the failure, but an idempotent retry returns the stored message without publishing it again. A production evolution should use an outbox/change-stream relay.
 
-3. **No WebSocket ping/keepalive.** Long-idle connections may be silently dropped by load balancers. Production deployments should add periodic pings.
+3. **No message pagination.** `GET /rooms/{roomID}/messages` returns all messages for the room. For large rooms, add cursor-based pagination using `(created_at, _id)`.
 
-4. **Single gRPC connection.** The API Gateway holds one gRPC connection to Chat Service. For higher throughput, a connection pool or gRPC client-side load balancing would be appropriate.
+4. **No WebSocket ping/keepalive.** Long-idle connections may be silently dropped by load balancers. Production deployments should add periodic pings.
 
-5. **No rate limiting.** Authentication endpoints are not rate-limited.
+5. **Single gRPC connection.** The API Gateway holds one gRPC connection to Chat Service. For higher throughput, use gRPC client-side load balancing.
 
-6. **Passwords in gRPC.** The `Register` and `Login` RPC calls transmit passwords over the gRPC channel. In production, enable TLS.
+6. **No rate limiting.** Authentication endpoints are not rate-limited.
+
+7. **No transport encryption.** HTTP, WebSocket, gRPC, PostgreSQL, MongoDB, and Redis connections are plaintext in the local Compose topology. Production deployments require TLS and authenticated infrastructure.

@@ -17,7 +17,8 @@ API Gateway  (:8080)
    ▼
 Chat Service
    │
-   ├──► PostgreSQL  (persistent storage)
+   ├──► PostgreSQL  (users, rooms, membership)
+   ├──► MongoDB     (message documents)
    │
    └──► Redis Pub/Sub
               │
@@ -37,17 +38,19 @@ Chat Service
 | Service | Port | Role |
 |---|---|---|
 | `api-gateway` | 8080 (HTTP/WS) | Public-facing gateway; JWT auth, request routing |
-| `chat-service` | 50051 (gRPC) | Business logic, PostgreSQL, Redis publishing |
-| PostgreSQL | 5432 (5433 on host) | Persistent storage for users, rooms, messages |
+| `chat-service` | 50051 (gRPC) | Business logic, PostgreSQL/MongoDB persistence, Redis publishing |
+| PostgreSQL | 5432 (5433 on host) | Relational storage for users, rooms, and membership |
+| MongoDB | 27017 | Message documents and database-enforced send idempotency |
 | Redis | 6379 | Pub/Sub for real-time message fanout |
 
 ---
 
 ## Technologies
 
-- **Go 1.23** — both services
+- **Go 1.26** — both services
 - **gRPC / Protocol Buffers** — inter-service communication
 - **PostgreSQL 16** — relational storage (pgx driver)
+- **MongoDB 7** — message document storage (official Go driver)
 - **Redis 7** — Pub/Sub for real-time delivery
 - **WebSockets** — Gorilla WebSocket
 - **JWT** — `golang-jwt/jwt/v5` for authentication
@@ -73,8 +76,9 @@ Chat Service
 
 ### Prerequisites
 
-- Go 1.23+
+- Go 1.26+
 - PostgreSQL 16 running on `localhost:5432` (or `5433`)
+- MongoDB 7 running on `localhost:27017`
 - Redis running on `localhost:6379`
 
 ### 1 — Apply database migrations
@@ -83,8 +87,11 @@ Chat Service
 psql -U postgres -d pulse_chat -f migrations/001_initial_schema.sql
 psql -U postgres -d pulse_chat -f migrations/002_create_rooms.sql
 psql -U postgres -d pulse_chat -f migrations/003_create_room_members.sql
-psql -U postgres -d pulse_chat -f migrations/004_create_messages.sql
 ```
+
+The chat service creates MongoDB's `messages` collection and required indexes
+at startup. Migration `004_create_messages.sql` remains a numbered no-op for
+compatibility with the original PostgreSQL migration sequence.
 
 ### 2 — Start the Chat Service
 
@@ -97,6 +104,8 @@ export POSTGRES_PASSWORD=postgres
 export POSTGRES_DB=pulse_chat
 export REDIS_HOST=localhost
 export REDIS_PORT=6379
+export MONGO_URI=mongodb://localhost:27017
+export MONGO_DATABASE=pulse_chat
 
 go run ./chat-service/cmd/chat
 ```
@@ -128,7 +137,10 @@ docker compose -f deployments/docker-compose.yaml up --build
 docker compose -f deployments/docker-compose.yaml down
 ```
 
-This starts PostgreSQL, Redis, Chat Service, and API Gateway with correct inter-container networking. The database schema is applied automatically on the first run.
+This starts PostgreSQL, MongoDB, Redis, Chat Service, and API Gateway with correct inter-container networking. PostgreSQL's schema is applied automatically on the first run; the chat service creates MongoDB indexes before accepting gRPC traffic.
+
+If a default host port is already occupied, override it when starting Compose,
+for example `POSTGRES_HOST_PORT=55433 docker compose -f deployments/docker-compose.yaml up --build`.
 
 ---
 
@@ -156,6 +168,8 @@ This starts PostgreSQL, Redis, Chat Service, and API Gateway with correct inter-
 | `POSTGRES_DB` | `pulse_chat` | PostgreSQL database name |
 | `REDIS_HOST` | `localhost` | Redis hostname |
 | `REDIS_PORT` | `6379` | Redis port |
+| `MONGO_URI` | `mongodb://localhost:27017` | MongoDB connection string |
+| `MONGO_DATABASE` | `pulse_chat` | MongoDB database containing message documents |
 | `JWT_SECRET` | *(required)* | JWT signing secret (must match gateway) |
 | `JWT_EXPIRY` | `24h` | JWT token expiry duration |
 
@@ -269,7 +283,7 @@ API Gateway
     │  gRPC CreateMessage
     ▼
 Chat Service
-    │  saves to PostgreSQL
+    │  saves message document to MongoDB
     │
     │  PUBLISH room:<roomID>  →  Redis
     ▼
@@ -309,9 +323,10 @@ pulse-chat-platform/
 │       ├── config/                  # Config from environment variables
 │       ├── grpc/                    # gRPC servers (auth, room, message)
 │       ├── models/                  # Domain models (User, Room, Message)
+│       ├── mongodb/                 # MongoDB client lifecycle
 │       ├── postgres/                # PostgreSQL connection pool
 │       ├── redis/                   # Redis client
-│       ├── repository/              # Data access (SQL queries)
+│       ├── repository/              # PostgreSQL and MongoDB data access
 │       └── service/                 # Business logic
 ├── proto/
 │   ├── auth.proto                   # AuthService RPC definitions
@@ -324,7 +339,7 @@ pulse-chat-platform/
 │   ├── 001_initial_schema.sql       # users table
 │   ├── 002_create_rooms.sql         # rooms table
 │   ├── 003_create_room_members.sql  # room_members table
-│   ├── 004_create_messages.sql      # messages table
+│   ├── 004_create_messages.sql      # compatibility no-op (messages use MongoDB)
 │   └── init.sql                     # Combined init script (used by Docker)
 ├── deployments/
 │   └── docker-compose.yaml
@@ -351,8 +366,8 @@ When a message is saved, Chat Service publishes it to `room:<roomID>`. API Gatew
 ### Why WebSockets?
 Full-duplex TCP connection ideal for real-time push. Membership is verified before the HTTP upgrade — rejections happen at the HTTP level with proper status codes.
 
-### Why PostgreSQL?
-Relational model fits chat data well (users, rooms with FK constraints, messages with FK to rooms and users). `UNIQUE(user_id, client_message_id)` constraint enforces idempotency at the database level.
+### Why PostgreSQL and MongoDB?
+PostgreSQL remains the source of truth for relational identity and authorization data: users, rooms, creators, and room membership. The gateway enforces membership on every room-scoped route, and Chat Service checks membership again before persisting a message. MongoDB owns chat message documents and room-history reads. On startup, Chat Service creates a unique compound index on `(user_id, client_message_id)` for duplicate-safe retries and a `(room_id, created_at, _id)` index for deterministic room-history scans. A duplicate retry returns the existing document and is not published to Redis a second time.
 
 ---
 
