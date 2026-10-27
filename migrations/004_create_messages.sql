@@ -1,10 +1,4 @@
-CREATE TABLE messages (
-    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    room_id UUID NOT NULL REFERENCES rooms(id),
-    user_id UUID NOT NULL REFERENCES users(id),
-    content TEXT NOT NULL,
-    client_message_id UUID NOT NULL,
-    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-
-    UNIQUE (user_id, client_message_id)
-);
+-- Message persistence moved to the MongoDB `messages` collection.
+-- The chat service creates the collection indexes during startup.
+-- This migration intentionally remains as a no-op so existing migration
+-- sequences keep their numbering without creating an unused SQL table.

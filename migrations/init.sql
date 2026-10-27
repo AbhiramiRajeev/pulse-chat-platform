@@ -31,14 +31,5 @@ CREATE TABLE IF NOT EXISTS room_members (
     PRIMARY KEY (user_id, room_id)
 );
 
--- Migration 004: messages
-CREATE TABLE IF NOT EXISTS messages (
-    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    room_id UUID NOT NULL REFERENCES rooms(id),
-    user_id UUID NOT NULL REFERENCES users(id),
-    content TEXT NOT NULL,
-    client_message_id UUID NOT NULL,
-    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-
-    UNIQUE (user_id, client_message_id)
-);
+-- Messages are persisted in MongoDB. The chat service creates the required
+-- unique idempotency and room-history indexes during startup.
