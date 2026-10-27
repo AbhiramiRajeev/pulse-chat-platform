@@ -4,25 +4,65 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"time"
 
 	"github.com/AbhiramiRajeev/pulse-chat-platform/chat-service/internal/models"
 	"github.com/google/uuid"
-	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgxpool"
-	"github.com/jackc/pgx/v5/pgconn"
+	"go.mongodb.org/mongo-driver/v2/bson"
+	"go.mongodb.org/mongo-driver/v2/mongo"
+	"go.mongodb.org/mongo-driver/v2/mongo/options"
 )
 
 // ErrDuplicateMessage is returned when a message with the same (user_id, client_message_id) already exists.
 var ErrDuplicateMessage = errors.New("duplicate message")
 
+const messageCollection = "messages"
+
 type MessageRepository struct {
-	db *pgxpool.Pool
+	collection *mongo.Collection
 }
 
-func NewMessageRepository(db *pgxpool.Pool) *MessageRepository {
+type messageDocument struct {
+	ID              string    `bson:"_id"`
+	RoomID          string    `bson:"room_id"`
+	UserID          string    `bson:"user_id"`
+	Content         string    `bson:"content"`
+	ClientMessageID string    `bson:"client_message_id"`
+	CreatedAt       time.Time `bson:"created_at"`
+}
+
+func NewMessageRepository(db *mongo.Database) *MessageRepository {
 	return &MessageRepository{
-		db: db,
+		collection: db.Collection(messageCollection),
 	}
+}
+
+func (r *MessageRepository) EnsureIndexes(ctx context.Context) error {
+	indexes := []mongo.IndexModel{
+		{
+			Keys: bson.D{
+				{Key: "user_id", Value: 1},
+				{Key: "client_message_id", Value: 1},
+			},
+			Options: options.Index().
+				SetName("unique_user_client_message").
+				SetUnique(true),
+		},
+		{
+			Keys: bson.D{
+				{Key: "room_id", Value: 1},
+				{Key: "created_at", Value: 1},
+				{Key: "_id", Value: 1},
+			},
+			Options: options.Index().SetName("room_message_history"),
+		},
+	}
+
+	if _, err := r.collection.Indexes().CreateMany(ctx, indexes); err != nil {
+		return fmt.Errorf("create message indexes: %w", err)
+	}
+
+	return nil
 }
 
 func (r *MessageRepository) CreateMessage(
@@ -32,123 +72,119 @@ func (r *MessageRepository) CreateMessage(
 	content string,
 	clientMessageID uuid.UUID,
 ) (*models.Message, error) {
+	message := &models.Message{
+		ID:              uuid.New(),
+		RoomID:          roomID,
+		UserID:          userID,
+		Content:         content,
+		ClientMessageID: clientMessageID,
+		CreatedAt:       time.Now().UTC(),
+	}
 
-	query := `
-		INSERT INTO messages (
-			room_id,
-			user_id,
-			content,
-			client_message_id
-		)
-		VALUES ($1, $2, $3, $4)
-		RETURNING id, room_id, user_id, content, client_message_id, created_at
-	`
-
-	message := &models.Message{}
-
-	err := r.db.QueryRow(
-		ctx,
-		query,
-		roomID,
-		userID,
-		content,
-		clientMessageID,
-	).Scan(
-		&message.ID,
-		&message.RoomID,
-		&message.UserID,
-		&message.Content,
-		&message.ClientMessageID,
-		&message.CreatedAt,
-	)
-
+	_, err := r.collection.InsertOne(ctx, documentFromMessage(message))
 	if err != nil {
-		// PostgreSQL unique_violation error code is 23505.
-		// When (user_id, client_message_id) already exists, fetch and return the existing message.
-		var pgErr *pgconn.PgError
-		if errors.As(err, &pgErr) && pgErr.Code == "23505" {
+		if mongo.IsDuplicateKeyError(err) {
 			existing, fetchErr := r.getMessageByClientID(ctx, userID, clientMessageID)
 			if fetchErr != nil {
-				return nil, fmt.Errorf("create message: %w", err)
+				return nil, fmt.Errorf("resolve duplicate message after insert failure: %w", fetchErr)
 			}
 			return existing, ErrDuplicateMessage
 		}
-		return nil, fmt.Errorf("create message: %w", err)
+		return nil, fmt.Errorf("insert message: %w", err)
 	}
 
 	return message, nil
 }
 
-// getMessageByClientID fetches an existing message by (user_id, client_message_id).
 func (r *MessageRepository) getMessageByClientID(
 	ctx context.Context,
 	userID uuid.UUID,
 	clientMessageID uuid.UUID,
 ) (*models.Message, error) {
-	query := `
-		SELECT id, room_id, user_id, content, client_message_id, created_at
-		FROM messages
-		WHERE user_id = $1 AND client_message_id = $2
-	`
-	message := &models.Message{}
-	err := r.db.QueryRow(ctx, query, userID, clientMessageID).Scan(
-		&message.ID,
-		&message.RoomID,
-		&message.UserID,
-		&message.Content,
-		&message.ClientMessageID,
-		&message.CreatedAt,
-	)
-	if errors.Is(err, pgx.ErrNoRows) {
-		return nil, fmt.Errorf("message not found after duplicate error")
+	var document messageDocument
+	err := r.collection.FindOne(ctx, bson.D{
+		{Key: "user_id", Value: userID.String()},
+		{Key: "client_message_id", Value: clientMessageID.String()},
+	}).Decode(&document)
+	if errors.Is(err, mongo.ErrNoDocuments) {
+		return nil, errors.New("message not found after duplicate key error")
 	}
 	if err != nil {
-		return nil, fmt.Errorf("fetch existing message: %w", err)
+		return nil, fmt.Errorf("find existing message: %w", err)
 	}
-	return message, nil
+
+	return document.toMessage()
 }
 
 func (r *MessageRepository) GetMessagesByRoomID(
 	ctx context.Context,
 	roomID uuid.UUID,
 ) ([]*models.Message, error) {
-
-	query := `
-		SELECT id, room_id, user_id, content, client_message_id, created_at
-		FROM messages
-		WHERE room_id = $1
-		ORDER BY created_at ASC
-	`
-
-	rows, err := r.db.Query(ctx, query, roomID)
+	cursor, err := r.collection.Find(
+		ctx,
+		bson.D{{Key: "room_id", Value: roomID.String()}},
+		options.Find().SetSort(bson.D{
+			{Key: "created_at", Value: 1},
+			{Key: "_id", Value: 1},
+		}),
+	)
 	if err != nil {
-		return nil, fmt.Errorf("get messages by room ID: %w", err)
+		return nil, fmt.Errorf("find messages by room ID: %w", err)
 	}
-	defer rows.Close()
+	defer cursor.Close(ctx)
 
-	var messages []*models.Message
+	var documents []messageDocument
+	if err := cursor.All(ctx, &documents); err != nil {
+		return nil, fmt.Errorf("decode room messages: %w", err)
+	}
 
-	for rows.Next() {
-		message := &models.Message{}
-
-		err := rows.Scan(
-			&message.ID,
-			&message.RoomID,
-			&message.UserID,
-			&message.Content,
-			&message.ClientMessageID,
-			&message.CreatedAt,
-		)
+	messages := make([]*models.Message, 0, len(documents))
+	for _, document := range documents {
+		message, err := document.toMessage()
 		if err != nil {
-			return nil, fmt.Errorf("scan message: %w", err)
+			return nil, err
 		}
-
 		messages = append(messages, message)
 	}
 
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("iterate messages: %w", err)
+	return messages, nil
+}
+
+func documentFromMessage(message *models.Message) messageDocument {
+	return messageDocument{
+		ID:              message.ID.String(),
+		RoomID:          message.RoomID.String(),
+		UserID:          message.UserID.String(),
+		Content:         message.Content,
+		ClientMessageID: message.ClientMessageID.String(),
+		CreatedAt:       message.CreatedAt,
+	}
+}
+
+func (d messageDocument) toMessage() (*models.Message, error) {
+	id, err := uuid.Parse(d.ID)
+	if err != nil {
+		return nil, fmt.Errorf("decode message ID %q: %w", d.ID, err)
+	}
+	roomID, err := uuid.Parse(d.RoomID)
+	if err != nil {
+		return nil, fmt.Errorf("decode message room ID %q: %w", d.RoomID, err)
+	}
+	userID, err := uuid.Parse(d.UserID)
+	if err != nil {
+		return nil, fmt.Errorf("decode message user ID %q: %w", d.UserID, err)
+	}
+	clientMessageID, err := uuid.Parse(d.ClientMessageID)
+	if err != nil {
+		return nil, fmt.Errorf("decode client message ID %q: %w", d.ClientMessageID, err)
 	}
 
-	return messages, nil
+	return &models.Message{
+		ID:              id,
+		RoomID:          roomID,
+		UserID:          userID,
+		Content:         d.Content,
+		ClientMessageID: clientMessageID,
+		CreatedAt:       d.CreatedAt,
+	}, nil
 }
