@@ -11,11 +11,12 @@ import (
 	"github.com/AbhiramiRajeev/pulse-chat-platform/chat-service/internal/models"
 	"github.com/AbhiramiRajeev/pulse-chat-platform/chat-service/internal/repository"
 	"github.com/google/uuid"
-
-	goredis "github.com/redis/go-redis/v9"
 )
 
-var ErrInvalidMessageInput = errors.New("invalid message input")
+var (
+	ErrInvalidMessageInput = errors.New("invalid message input")
+	ErrNotRoomMember       = errors.New("user is not a room member")
+)
 
 const MessageChannelPrefix = "room:"
 
@@ -29,17 +30,33 @@ type MessageEvent struct {
 }
 
 type MessageService struct {
-	messageRepo *repository.MessageRepository
-	redisClient *goredis.Client
+	messageRepo messageRepository
+	publisher   messagePublisher
+	membership  roomMembershipChecker
+}
+
+type messageRepository interface {
+	CreateMessage(context.Context, uuid.UUID, uuid.UUID, string, uuid.UUID) (*models.Message, error)
+	GetMessagesByRoomID(context.Context, uuid.UUID) ([]*models.Message, error)
+}
+
+type messagePublisher interface {
+	Publish(context.Context, string, any) error
+}
+
+type roomMembershipChecker interface {
+	IsUserInRoom(context.Context, uuid.UUID, uuid.UUID) (bool, error)
 }
 
 func NewMessageService(
-	messageRepo *repository.MessageRepository,
-	redisClient *goredis.Client,
+	messageRepo messageRepository,
+	publisher messagePublisher,
+	membership roomMembershipChecker,
 ) *MessageService {
 	return &MessageService{
 		messageRepo: messageRepo,
-		redisClient: redisClient,
+		publisher:   publisher,
+		membership:  membership,
 	}
 }
 
@@ -70,6 +87,14 @@ func (s *MessageService) CreateMessage(
 	clientMessageUUID, err := uuid.Parse(clientMessageID)
 	if err != nil {
 		return nil, ErrInvalidMessageInput
+	}
+
+	isMember, err := s.membership.IsUserInRoom(ctx, roomUUID, userUUID)
+	if err != nil {
+		return nil, fmt.Errorf("check room membership: %w", err)
+	}
+	if !isMember {
+		return nil, ErrNotRoomMember
 	}
 
 	message, err := s.messageRepo.CreateMessage(
@@ -104,12 +129,7 @@ func (s *MessageService) CreateMessage(
 
 	channel := MessageChannelPrefix + message.RoomID.String()
 
-	err = s.redisClient.Publish(
-		ctx,
-		channel,
-		payload,
-	).Err()
-	if err != nil {
+	if err := s.publisher.Publish(ctx, channel, payload); err != nil {
 		return nil, fmt.Errorf("publish message event: %w", err)
 	}
 

@@ -21,3 +21,15 @@ func NewClient(ctx context.Context, cfg config.Config) (*goredis.Client, error) 
 
 	return client, nil
 }
+
+type Publisher struct {
+	client *goredis.Client
+}
+
+func NewPublisher(client *goredis.Client) *Publisher {
+	return &Publisher{client: client}
+}
+
+func (p *Publisher) Publish(ctx context.Context, channel string, payload any) error {
+	return p.client.Publish(ctx, channel, payload).Err()
+}
