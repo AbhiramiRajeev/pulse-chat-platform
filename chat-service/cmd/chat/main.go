@@ -14,6 +14,7 @@ import (
 	"github.com/AbhiramiRajeev/pulse-chat-platform/chat-service/internal/auth"
 	"github.com/AbhiramiRajeev/pulse-chat-platform/chat-service/internal/config"
 	chatgrpc "github.com/AbhiramiRajeev/pulse-chat-platform/chat-service/internal/grpc"
+	"github.com/AbhiramiRajeev/pulse-chat-platform/chat-service/internal/mongodb"
 	"github.com/AbhiramiRajeev/pulse-chat-platform/chat-service/internal/postgres"
 	"github.com/AbhiramiRajeev/pulse-chat-platform/chat-service/internal/redis"
 	"github.com/AbhiramiRajeev/pulse-chat-platform/chat-service/internal/repository"
@@ -30,7 +31,8 @@ func main() {
 	fmt.Println("Starting chat service")
 
 	cfg := config.Load()
-	ctx := context.Background()
+	ctx, cancelStartup := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancelStartup()
 
 	// PostgreSQL
 	db, err := postgres.NewPool(ctx, cfg)
@@ -40,6 +42,20 @@ func main() {
 	defer db.Close()
 
 	fmt.Println("Connected to PostgreSQL successfully")
+
+	mongoClient, mongoDatabase, err := mongodb.NewClient(ctx, cfg)
+	if err != nil {
+		log.Fatal("Failed to connect to MongoDB:", err)
+	}
+	defer func() {
+		disconnectCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		if err := mongoClient.Disconnect(disconnectCtx); err != nil {
+			log.Printf("Failed to disconnect from MongoDB: %v", err)
+		}
+	}()
+
+	fmt.Println("Connected to MongoDB successfully")
 
 	// Redis
 	redisClient, err := redis.NewClient(ctx, cfg)
@@ -53,7 +69,10 @@ func main() {
 	// Repositories
 	userRepo := repository.NewUserRepository(db)
 	roomRepo := repository.NewRoomRepository(db)
-	messageRepo := repository.NewMessageRepository(db)
+	messageRepo := repository.NewMessageRepository(mongoDatabase)
+	if err := messageRepo.EnsureIndexes(ctx); err != nil {
+		log.Fatal("Failed to initialize MongoDB message indexes:", err)
+	}
 
 	// JWT
 	jwtManager := auth.NewJWTManager(
@@ -67,7 +86,8 @@ func main() {
 
 	messageService := service.NewMessageService(
 		messageRepo,
-		redisClient,
+		redis.NewPublisher(redisClient),
+		roomRepo,
 	)
 
 	// Our gRPC server implementations
@@ -95,12 +115,12 @@ func main() {
 	)
 
 	// Listen
-	listener, err := net.Listen("tcp", ":50051")
+	listener, err := net.Listen("tcp", ":"+cfg.GRPCPort)
 	if err != nil {
 		log.Fatalf("failed to listen: %v", err)
 	}
 
-	log.Println("Chat Service starting on gRPC port 50051")
+	log.Printf("Chat Service starting on gRPC port %s", cfg.GRPCPort)
 
 	// Start gRPC server in a goroutine
 	var wg sync.WaitGroup
